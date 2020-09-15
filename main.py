@@ -5,6 +5,8 @@ import math
 import numba
 import time
 import random
+from sklearn.neighbors import KDTree
+import skimage
 
 
 HISTOGRAM_CHANNEL_COLOR_GREY = '#808080'
@@ -18,6 +20,9 @@ COMPARISON_PATTERN_LIGHT_RETINEX = 'RETINEX'
 COMPARISON_PATTERN_LIGHT_NORM = 'NORM'
 COMPARISON_PATTERN_FILTER_MED = 'MED'
 COMPARISON_PATTERN_FILTER_GAUSS = 'GAUSS'
+FEATURE_TYPE_BLOB = 'BLOB'
+FEATURE_TYPE_CORNER = 'CORNER'
+FEATURE_TYPE_REGION = 'REGION'
 
 
 def image_open(path):
@@ -300,7 +305,7 @@ def mark_enterings(image, entering, color=(255,0,0)):
     return result
 
 
-def canny_detector(image, link=255/3, find=255):
+def edge_detector(image, link=255 / 3, find=255):
     return cv2.Canny(image, find, link)
 
 
@@ -313,8 +318,8 @@ def edges_comparison_pattern(in_image, in_pattern, filter=COMPARISON_PATTERN_FIL
     elif filter == COMPARISON_PATTERN_FILTER_GAUSS:
         image = cv2.GaussianBlur(image, (3,3), 3)
         pattern = cv2.GaussianBlur(pattern, (3,3), 3)
-    image = canny_detector(multi_scale_retinex(image))
-    pattern = canny_detector(multi_scale_retinex(pattern))
+    image = edge_detector(multi_scale_retinex(image))
+    pattern = edge_detector(multi_scale_retinex(pattern))
 
     @numba.njit
     def inverse_edge_value(image):
@@ -549,15 +554,125 @@ def photometric_properties_components(image_labled, origin_image, number_compone
     return result
 
 
+def mark_features(image, features, type, color=(255,0,0)):
+    result = image.copy()
+    for feature in features:
+        if type == FEATURE_TYPE_BLOB:
+            x, y, r = feature
+            cv2.circle(result, (round(x), round(y)), round(r), color)
+        elif type == FEATURE_TYPE_CORNER:
+            x, y = feature
+            cv2.circle(result, (round(x), round(y)), 1, color)
+        else:
+            x, y, width, height = feature
+            cv2.rectangle(result, (x, y), (min(x+width, result.shape[0]-1), min(y+height, result.shape[1]-1)), color)
+
+    return result
+
+
+def blob_detector(image, threshold=0.5):
+    # SimpleBlobDetector detector in opencv
+    result = skimage.feature.blob_dog(cv2.cvtColor(clear_noise_gauss(image), cv2.COLOR_RGB2GRAY), threshold=threshold)
+    result[:, 2] = result[:, 2] * np.sqrt(2.0)
+    return [[x[1], x[0], x[2]] for x in result]
+
+
+def corner_detector(image, threshold_corn=0.01, threshold_dog=0.01, number=5000):
+    detector = cv2.xfeatures2d.HarrisLaplaceFeatureDetector_create(corn_thresh=threshold_corn, DOG_thresh=threshold_dog,
+                                                                   maxCorners=number)
+    result = detector.detect(cv2.cvtColor(clear_noise_gauss(image), cv2.COLOR_RGB2GRAY))
+    return [x.pt for x in result]
+
+
+def region_detector(image):
+    detector = cv2.MSER_create()
+    _, result = detector.detectRegions(clear_noise_gauss(image))
+    return result
+
+
+# O(n r^2 log n), may be other method decrease complexity to O(n log n), n=len(features_in)
+def adaptive_select_feature(features_in, type, radius):
+    result = []
+    used_points = set()
+    features = list(features_in.copy())
+    if type == FEATURE_TYPE_REGION:
+        features.sort(key=lambda x: x[2]*x[3], reverse=True)
+    for feature in features:
+        x, y  = None, None
+        if type == FEATURE_TYPE_BLOB:
+            x, y, _ = feature
+        elif type == FEATURE_TYPE_CORNER:
+            x, y = feature
+        else:
+            x, y, w, h = feature
+            x += round(w/2)
+            y += round(h/2)
+
+        if (x, y) not in used_points:
+            result.append(feature)
+            for i in range(2*radius+1):
+                for j in range(2*radius+1):
+                    used_points.add((x-radius+i, y-radius+j))
+    return result
+
+
+# (x, y, r), angle, descriptor
+def SIFT(image):
+    detector = cv2.SIFT_create()
+    features, descriptors = detector.detectAndCompute(cv2.cvtColor(clear_noise_gauss(image), cv2.COLOR_RGB2GRAY), None)
+    return [(round(x.pt[0]), round(x.pt[1]), x.size/2) for x in features], [x.angle for x in features], descriptors
+
+
+def comparison_features(descriptors_1, descriptors_2, threshold=None):
+    tree = KDTree(descriptors_2, metric='l1')
+    result = [x[0] for x in tree.query(descriptors_1, return_distance=False)]
+
+    if threshold is not None:
+        def l1(a, b):
+            result = 0
+            for i in range(len(a)):
+                result += abs(a[i]-b[i])
+            return result
+        for i in range(len(result)):
+            if l1(descriptors_1[i], descriptors_2[result[i]]) > threshold:
+                result[i] = None
+    return result
+
+
+def show_pairs_features(image_1, image_2, pairs, features_1, features_2, type):
+    a = mark_features(image_1, features_1, type)
+    b = mark_features(image_2, features_2, type)
+
+    result = np.concatenate((a, b), axis=1)
+    for i in range(len(pairs)):
+        if pairs[i] is None:
+            continue
+        x2, y2, x1, y1 = None, None, None, None
+        if type == FEATURE_TYPE_BLOB:
+            x1, y1, _ = features_1[i]
+            x2, y2, _ = features_2[pairs[i]]
+        elif type == FEATURE_TYPE_CORNER:
+            x1, y1 = features_1[i]
+            x2, y2 = features_2[pairs[i]]
+        else:
+            x1, y1, _, _ = features_1[i]
+            x2, y2, _, _ = features_2[pairs[i]]
+        print(x1,y1,x2,y2)
+        cv2.arrowedLine(result, (x1, y1), (image_1.shape[1]+x2, y2), (0, 0, 255))
+    return result
+
+
 if __name__ == '__main__':
-    image = image_open('image/adap_binarization.png')
+    image_1 = image_open('image/cmp_feat_1.jpg')
+    image_2 = image_open('image/cmp_feat_2.jpg')
+    #image = cv2.imread("image/blob_detect.jpg", cv2.IMREAD_GRAYSCALE)
     s = time.time()
-    #new_image = threshold_binarization(clear_noise_gauss(image), 180, False)
-    new_image = threshold_binarization_by_histogramm(mat_close(multi_scale_retinex(clear_noise_gauss(image)), 3), False, 0.15)
-    #new_image = adaptation_binarization(image, 5, 7, False)
+    kp1, _, descriptors1 = SIFT(image_1)
+    kp2, _, descriptors2 = SIFT(image_2)
+    pairs = comparison_features(descriptors1, descriptors2, 600)
     e = time.time()
     print('time', e-s)
-    images_show([(image, 'image'), (multi_scale_retinex(clear_noise_gauss(image)), 'bin')])
+    images_show([(show_pairs_features(image_1, image_2, pairs, kp1, kp2, FEATURE_TYPE_BLOB), 'image')])
     # image = image_open('image/cmp_pat_0_1.jpg')
-    # images_show([(canny_detector(clear_noise_salt_and_pepper(multi_scale_retinex(image))), 'med'),
+    #images_show([(canny_detector(clear_noise_salt_and_pepper(multi_scale_retinex(image))), 'med'),
     #              (canny_detector(clear_noise_gauss(multi_scale_retinex(image))), 'gauss')])
