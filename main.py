@@ -625,7 +625,7 @@ def SIFT(image):
 
 def comparison_features(descriptors_1, descriptors_2, threshold=None):
     tree = KDTree(descriptors_2, metric='l1')
-    result = [x[0] for x in tree.query(descriptors_1, return_distance=False)]
+    points = [x[0] for x in tree.query(descriptors_1, return_distance=False)]
 
     if threshold is not None:
         def l1(a, b):
@@ -633,9 +633,13 @@ def comparison_features(descriptors_1, descriptors_2, threshold=None):
             for i in range(len(a)):
                 result += abs(a[i]-b[i])
             return result
-        for i in range(len(result)):
-            if l1(descriptors_1[i], descriptors_2[result[i]]) > threshold:
-                result[i] = None
+        for i in range(len(points)):
+            if l1(descriptors_1[i], descriptors_2[points[i]]) > threshold:
+                points[i] = None
+    result = []
+    for i in range(len(points)):
+        if points[i] is not None:
+            result.append((i, points[i]))
     return result
 
 
@@ -644,35 +648,88 @@ def show_pairs_features(image_1, image_2, pairs, features_1, features_2, type):
     b = mark_features(image_2, features_2, type)
 
     result = np.concatenate((a, b), axis=1)
-    for i in range(len(pairs)):
-        if pairs[i] is None:
-            continue
-        x2, y2, x1, y1 = None, None, None, None
-        if type == FEATURE_TYPE_BLOB:
-            x1, y1, _ = features_1[i]
-            x2, y2, _ = features_2[pairs[i]]
-        elif type == FEATURE_TYPE_CORNER:
-            x1, y1 = features_1[i]
-            x2, y2 = features_2[pairs[i]]
-        else:
-            x1, y1, _, _ = features_1[i]
-            x2, y2, _, _ = features_2[pairs[i]]
-        print(x1,y1,x2,y2)
+    for p_1, p_2 in pairs:
+        x2, y2, x1, y1 = features_2[p_2][0], features_2[p_2][1], features_1[p_1][0], features_1[p_1][1]
         cv2.arrowedLine(result, (x1, y1), (image_1.shape[1]+x2, y2), (0, 0, 255))
     return result
 
 
+def calculate_homography(kp1, kp2, pairs, T=2):
+    points_1 = np.zeros((len(pairs), 1, 2), dtype=np.float32)
+    points_2 = np.zeros((len(pairs), 1, 2), dtype=np.float32)
+    for i in range(len(pairs)):
+        points_1[i] = kp1[pairs[i][0]][0:2]
+        points_2[i] = kp2[pairs[i][1]][0:2]
+    homohraphy, _ = cv2.findHomography(points_1, points_2, cv2.RANSAC, ransacReprojThreshold=T)
+    return homohraphy
+
+
+def filter_pairs_features(features_1, features_2, pairs, transform, T):
+    result = []
+    M = np.array(transform)
+    for p1, p2 in pairs:
+        point1 = np.zeros((3, 1), dtype=np.float32)
+        point2 = np.zeros((3, 1), dtype=np.float32)
+        point1[0][0], point1[1][0], point1[2][0] = features_1[p1][0], features_1[p1][1], 1
+        point2[0][0], point2[1][0], point2[2][0] = features_2[p2][0], features_2[p2][1], 1
+        if not np.linalg.norm(point2 - M.dot(point1), ord='fro') > T:
+            result.append((p1, p2))
+    return result
+
+
+def custom_create_panorama(image_1, image_2, H, offset_1, offset_2):
+    width = image_1.shape[1] + image_2.shape[1]
+    height = image_1.shape[0] + image_2.shape[0]
+    offset = np.zeros((3,3), dtype=np.float32)
+    for i in range(3):
+        offset[i][i] = 1
+    offset[0][2] = offset_1[0]
+    offset[1][2] = offset_1[1]
+
+    result = cv2.warpPerspective(image_1, H.dot(offset), (width, height))
+    result[offset_2[1]:offset_2[1]+image_2.shape[0], offset_2[0]:offset_2[0]+image_2.shape[1]] = image_2
+    return result
+
+
+def create_panorama(images):
+    stitcher = cv2.Stitcher_create(cv2.STITCHER_PANORAMA)
+    status, result = stitcher.stitch(images)
+    if status != cv2.STITCHER_OK:
+        return None
+    return result
+
+
+def hough_transform(image, rho=1.0, theta=np.pi/180, min_vote=100):
+    edges = edge_detector(image)
+    return [x[0] for x in cv2.HoughLinesP(edges, rho, theta, min_vote)]
+
+
+def mark_lines(image, lines, color=(255, 0, 0)):
+    result = image.copy()
+    for line in lines:
+        x1, y1, x2, y2 = line
+        cv2.line(result, (x1, y1), (x2, y2), color)
+    return result
+
+
 if __name__ == '__main__':
-    image_1 = image_open('image/cmp_feat_1.jpg')
-    image_2 = image_open('image/cmp_feat_2.jpg')
-    #image = cv2.imread("image/blob_detect.jpg", cv2.IMREAD_GRAYSCALE)
+    image_1 = image_open('image/pan_0.jpg')
+    image_2 = image_open('image/pan_1.jpg')
     s = time.time()
     kp1, _, descriptors1 = SIFT(image_1)
     kp2, _, descriptors2 = SIFT(image_2)
-    pairs = comparison_features(descriptors1, descriptors2, 600)
+    pairs = comparison_features(descriptors1, descriptors2)
+    h = calculate_homography(kp1, kp2, pairs)
+    filt_pairs = filter_pairs_features(kp1, kp2, pairs, h, 4)
     e = time.time()
     print('time', e-s)
-    images_show([(show_pairs_features(image_1, image_2, pairs, kp1, kp2, FEATURE_TYPE_BLOB), 'image')])
-    # image = image_open('image/cmp_pat_0_1.jpg')
-    #images_show([(canny_detector(clear_noise_salt_and_pepper(multi_scale_retinex(image))), 'med'),
-    #              (canny_detector(clear_noise_gauss(multi_scale_retinex(image))), 'gauss')])
+    # images_show([(show_pairs_features(image_1, image_2, pairs, kp1, kp2, FEATURE_TYPE_BLOB), 'image'),
+    #              (show_pairs_features(image_1, image_2, filt_pairs, kp1, kp2, FEATURE_TYPE_BLOB), 'filt'),
+    #              (cv2.warpPerspective(image_1, h, (image_1.shape[1], image_1.shape[0])), 'trans1'),
+    #              (cv2.warpPerspective(image_2, np.linalg.inv(h), (image_2.shape[1], image_2.shape[0])), 'trans2')])
+    images_show([(custom_create_panorama(image_1, image_2, h, (355, 0), (355, 0)), 'image')])
+
+    # image = image_open('image/hough_trans.jpg')
+    # lines_1 = hough_transform(image, rho=3, min_vote=10)
+    # lines_2 = hough_transform(image, rho=3, min_vote=100)
+    # images_show([(mark_lines(image, lines_1), '25'), (mark_lines(image, lines_2), '100')])
