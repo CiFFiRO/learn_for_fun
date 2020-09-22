@@ -7,6 +7,9 @@ import time
 import random
 from sklearn.neighbors import KDTree
 import skimage
+import os
+import scipy.cluster
+from sklearn import svm
 
 
 HISTOGRAM_CHANNEL_COLOR_GREY = '#808080'
@@ -712,24 +715,90 @@ def mark_lines(image, lines, color=(255, 0, 0)):
     return result
 
 
+def data_shuffle(data):
+    result = data.copy()
+    random.shuffle(result)
+    return result
+
+
+def cross_validation_check(data, learning, d):
+    rnd_data = data_shuffle(data)
+    first_result, second_result = 0.0, 0.0
+    for i in range(d):
+        control_data = rnd_data[i*len(rnd_data)//d:(i+1)*len(rnd_data)//d]
+        learn_data = rnd_data[0:i*len(rnd_data)//d]
+        learn_data.extend(rnd_data[(i+1)*len(rnd_data)//d:])
+        first_error, second_error, _ = learning(learn_data, control_data)
+        first_result += first_error
+        second_result += second_error
+    return first_result / d, second_result / d
+
+
+def k_means(data, k):
+    return scipy.cluster.vq.kmeans(data, k)
+
+
+def linear_classificator(data, test, test_need=True, words_number=100):
+    descriptors = []
+    for file_name, _ in data:
+        image = image_open(file_name)
+        descriptors.extend(SIFT(image)[2])
+    descriptors = np.array(descriptors, dtype=np.float32)
+    centers, _ = k_means(descriptors, words_number)
+
+    tree = KDTree(centers)
+    X = []
+    y = []
+    for file_name, is_bomber in data:
+        image = image_open(file_name)
+        image_descriptors = SIFT(image)[2]
+        histogram = [0]*words_number
+        center_indexes = [x[0] for x in tree.query(image_descriptors, return_distance=False)]
+        for center_index in center_indexes:
+            histogram[center_index] += 1
+        X.append(histogram)
+        y.append(0 if is_bomber else 1)
+    model = svm.SVC()
+    model.fit(X, y)
+
+    if test_need:
+        first_error, second_error = 0, 0
+        for file_name, is_bomber in test:
+            image = image_open(file_name)
+            image_descriptors = SIFT(image)[2]
+            histogram = [0]*words_number
+            center_indexes = [x[0] for x in tree.query(image_descriptors, return_distance=False)]
+            for center_index in center_indexes:
+                histogram[center_index] += 1
+            predict = model.predict([histogram])[0]
+            if predict == 1 and is_bomber:
+                #print('second', file_name)
+                second_error += 1
+            elif predict == 0 and not is_bomber:
+                #print('first', file_name)
+                first_error += 1
+        return first_error, second_error, model
+    return model
+
+
+def B52_classificator(directory):
+    data = [(os.path.join(directory, 'learn', 'true', x), True)
+            for x in os.listdir(os.path.join(directory, 'learn', 'true'))]
+    data.extend([(os.path.join(directory, 'learn', 'false', x), False)
+                 for x in os.listdir(os.path.join(directory, 'learn', 'false'))])
+    test = [(os.path.join(directory, 'test', 'true', x), True)
+            for x in os.listdir(os.path.join(directory, 'test', 'true'))]
+    test.extend([(os.path.join(directory, 'test', 'false', x), False)
+                 for x in os.listdir(os.path.join(directory, 'test', 'false'))])
+
+    return linear_classificator(data, test)
+
+
+
+
 if __name__ == '__main__':
-    image_1 = image_open('image/pan_0.jpg')
-    image_2 = image_open('image/pan_1.jpg')
     s = time.time()
-    kp1, _, descriptors1 = SIFT(image_1)
-    kp2, _, descriptors2 = SIFT(image_2)
-    pairs = comparison_features(descriptors1, descriptors2)
-    h = calculate_homography(kp1, kp2, pairs)
-    filt_pairs = filter_pairs_features(kp1, kp2, pairs, h, 4)
+
     e = time.time()
     print('time', e-s)
-    # images_show([(show_pairs_features(image_1, image_2, pairs, kp1, kp2, FEATURE_TYPE_BLOB), 'image'),
-    #              (show_pairs_features(image_1, image_2, filt_pairs, kp1, kp2, FEATURE_TYPE_BLOB), 'filt'),
-    #              (cv2.warpPerspective(image_1, h, (image_1.shape[1], image_1.shape[0])), 'trans1'),
-    #              (cv2.warpPerspective(image_2, np.linalg.inv(h), (image_2.shape[1], image_2.shape[0])), 'trans2')])
-    images_show([(custom_create_panorama(image_1, image_2, h, (355, 0), (355, 0)), 'image')])
 
-    # image = image_open('image/hough_trans.jpg')
-    # lines_1 = hough_transform(image, rho=3, min_vote=10)
-    # lines_2 = hough_transform(image, rho=3, min_vote=100)
-    # images_show([(mark_lines(image, lines_1), '25'), (mark_lines(image, lines_2), '100')])
