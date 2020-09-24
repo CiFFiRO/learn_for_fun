@@ -10,6 +10,7 @@ import skimage
 import os
 import scipy.cluster
 from sklearn import svm
+import imutils
 
 
 HISTOGRAM_CHANNEL_COLOR_GREY = '#808080'
@@ -738,7 +739,7 @@ def k_means(data, k):
     return scipy.cluster.vq.kmeans(data, k)
 
 
-def linear_classificator(data, test, test_need=True, words_number=100):
+def linear_classificator(data, test, words_number, test_need=True):
     descriptors = []
     for file_name, _ in data:
         image = image_open(file_name)
@@ -749,7 +750,7 @@ def linear_classificator(data, test, test_need=True, words_number=100):
     tree = KDTree(centers)
     X = []
     y = []
-    for file_name, is_bomber in data:
+    for file_name, is_object in data:
         image = image_open(file_name)
         image_descriptors = SIFT(image)[2]
         histogram = [0]*words_number
@@ -757,13 +758,18 @@ def linear_classificator(data, test, test_need=True, words_number=100):
         for center_index in center_indexes:
             histogram[center_index] += 1
         X.append(histogram)
-        y.append(0 if is_bomber else 1)
+        y.append(0 if is_object else 1)
     model = svm.SVC()
     model.fit(X, y)
 
     if test_need:
         first_error, second_error = 0, 0
-        for file_name, is_bomber in test:
+        all_objects, all_other = 0, 0
+        for file_name, is_object in test:
+            if is_object:
+                all_objects += 1
+            else:
+                all_other += 1
             image = image_open(file_name)
             image_descriptors = SIFT(image)[2]
             histogram = [0]*words_number
@@ -771,13 +777,13 @@ def linear_classificator(data, test, test_need=True, words_number=100):
             for center_index in center_indexes:
                 histogram[center_index] += 1
             predict = model.predict([histogram])[0]
-            if predict == 1 and is_bomber:
+            if predict == 1 and is_object:
                 #print('second', file_name)
                 second_error += 1
-            elif predict == 0 and not is_bomber:
+            elif predict == 0 and not is_object:
                 #print('first', file_name)
                 first_error += 1
-        return first_error, second_error, model
+        return first_error/all_objects, second_error/all_other, model
     return model
 
 
@@ -791,9 +797,33 @@ def B52_classificator(directory):
     test.extend([(os.path.join(directory, 'test', 'false', x), False)
                  for x in os.listdir(os.path.join(directory, 'test', 'false'))])
 
-    return linear_classificator(data, test)
+    return linear_classificator(data, test, words_number=100)
 
 
+def people_detector(orig_image):
+    hog = cv2.HOGDescriptor()
+    hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+    image = imutils.resize(orig_image, width=min(400, orig_image.shape[1]))
+    rects, _ = hog.detectMultiScale(image, winStride=(4, 4), padding=(8, 8), scale=1.05)
+    a = orig_image.shape[0] / image.shape[0]
+    b = orig_image.shape[1] / image.shape[1]
+    result = []
+    for x, y, w, h in rects:
+        result.append((round(x*a), round(y*b), round(w*a), round(h*b)))
+    return result
+
+
+def mark_rectangles(image, rectangles, color=(255, 0, 0)):
+    result = image.copy()
+    for x, y, w, h in rectangles:
+        cv2.rectangle(result, (x, y), (x + w, y + h), color)
+    return result
+
+
+# detector from https://sourceforge.net/p/emgucv/opencv/ci/d58cd9851fdb592a395488fc5721d11c7436a99c/tree/data/haarcascades/
+def face_detector(image, path_to_detector):
+    detector = cv2.CascadeClassifier(path_to_detector)
+    return detector.detectMultiScale(cv2.cvtColor(image, cv2.COLOR_RGB2GRAY), 1.3, 5)
 
 
 if __name__ == '__main__':
