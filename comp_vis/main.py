@@ -739,7 +739,7 @@ def k_means(data, k):
     return scipy.cluster.vq.kmeans(data, k)
 
 
-def linear_classificator(data, test, words_number, test_need=True):
+def binary_classificator(data, test, words_number, test_need=True):
     descriptors = []
     for file_name, _ in data:
         image = image_open(file_name)
@@ -797,7 +797,7 @@ def B52_classificator(directory):
     test.extend([(os.path.join(directory, 'test', 'false', x), False)
                  for x in os.listdir(os.path.join(directory, 'test', 'false'))])
 
-    return linear_classificator(data, test, words_number=100)
+    return binary_classificator(data, test, words_number=100)
 
 
 def people_detector(orig_image):
