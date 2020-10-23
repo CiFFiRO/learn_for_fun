@@ -83,13 +83,21 @@ def plot2d(info):
 
 def classification_error(model, test):
     data, t = test
-    error = 0
     N = data.shape[0]
+    K = t.shape[1]
+    F = [0] * K
+    C = [0] * K
     for i in range(N):
         result = model(data[i]).argmax()
-        if result != t[i].argmax():
-            error += 1
-    return error / N
+        class_x = t[i].argmax()
+        if result == class_x:
+            F[result] += 1
+        C[class_x] += 1
+    error = 1.0
+    for i in range(K):
+        if C[i] > 0:
+            error *= F[i]/C[i]
+    return 1.0 - error
 
 
 def logistic_regression(learn, valid, K, gamma, alpha, eps, limit):
@@ -139,27 +147,28 @@ def logistic_regression(learn, valid, K, gamma, alpha, eps, limit):
     return get_model(prev_W, prev_b)
 
 
-def example_1():
-    def gen_data_t_1(size):
-        K = 4
-        data = np.zeros((size, 2), dtype=np.float64)
-        t = np.zeros((size, K), dtype=np.float64)
+def gen_data_t_1(size):
+    K = 4
+    data = np.zeros((size, 2), dtype=np.float64)
+    t = np.zeros((size, K), dtype=np.float64)
 
-        centers = np.array([[5.0, 5.0], [3.0, -2.0], [-7.0, 1.0], [0.0, 0.0]])
-        r = np.array([3.0, 2.0, 4.0, 0.5])
-        for i in range(size):
-            index = random.randint(0, K-1)
-            data[i][0] = random.uniform(centers[index][0]-r[index], centers[index][0]+r[index])
-            data[i][1] = random.uniform(centers[index][1] - math.sqrt(r[index]**2-(centers[index][0]-data[i][0])**2),
-                                        centers[index][1] + math.sqrt(r[index]**2-(centers[index][0]-data[i][0])**2))
-            t[i][index] = 1.0
+    centers = np.array([[5.0, 5.0], [3.0, -2.0], [-7.0, 1.0], [0.0, 0.0]])
+    r = np.array([3.0, 2.0, 4.0, 0.5])
+    for i in range(size):
+        index = random.randint(0, K-1)
+        data[i][0] = random.uniform(centers[index][0]-r[index], centers[index][0]+r[index])
+        data[i][1] = random.uniform(centers[index][1] - math.sqrt(r[index]**2-(centers[index][0]-data[i][0])**2),
+                                    centers[index][1] + math.sqrt(r[index]**2-(centers[index][0]-data[i][0])**2))
+        t[i][index] = 1.0
 
-        return data, t
+    return data, t
 
+
+def example_classification_k(get_model):
     data, t = gen_data_t_1(1000)
     train, valid, test = split_data(data, t)
 
-    model = logistic_regression(train, valid, 4, 3, 0.15, 1e-2, 100)
+    model = get_model(train, valid)
     print(classification_error(model, train), classification_error(model, valid), classification_error(model, test))
 
     T = test[0].shape[0]
@@ -174,8 +183,111 @@ def example_1():
     plot2d(plot_arg)
 
 
+def example_1():
+    def f(train, valid):
+        return logistic_regression(train, valid, 4, 3, 0.15, 1e-2, 100)
+    example_classification_k(f)
+
+
+def solution_tree(data, t, step_number, limit_level, limit_number, limit_entropy):
+    K = t.shape[1]
+    N = t.shape[0]
+    M = data.shape[1]
+
+    nodes = [[]]
+
+    def H(index):
+        result = 0.0
+        cnt = np.zeros(K, dtype=np.float64)
+        for i in range(N):
+            v = 0
+            while True:
+                if v == index:
+                    cnt[t[i].argmax()] += 1
+                    break
+                if len(nodes[v]) < 4:
+                    break
+                left, right, psi, tao = nodes[v]
+                if psi(data[i]) < tao:
+                    v = left
+                else:
+                    v = right
+        s = cnt.sum()
+        for i in range(K):
+            if cnt[i] > 0:
+                p = cnt[i] / s
+                result += p*math.log2(p)
+        return -result, s, cnt
+
+    queue = [(0, 0)]
+    while len(queue) > 0:
+        v, level = queue.pop(0)
+        H_v, N_v, cnt = H(v)
+        if level > limit_level or N_v < limit_number or H_v < limit_entropy:
+            nodes[v] = [cnt.argmax()]
+            continue
+        left, right = len(nodes), len(nodes) + 1
+        nodes.append([])
+        nodes.append([])
+        nodes[v] = [left, right, None, None]
+        max_value = float('-inf')
+        argmax = [None, None]
+        for i in range(M):
+            psi = lambda x, idx=i: x[idx]
+            nodes[v][2] = psi
+            min_x, max_x = data[:, i].min(), data[:, i].max()
+            tao = min_x
+            step = (max_x-min_x)/step_number
+            while tao < max_x:
+                nodes[v][3] = tao
+                tao += step
+
+                H_left, N_left, _ = H(left)
+                H_right, N_right, _ = H(right)
+
+                I = H_v - (N_left/N_v)*H_left - (N_right/N_v)*H_right
+                if max_value < I:
+                    max_value = I
+                    argmax[0] = psi
+                    argmax[1] = nodes[v][3]
+
+        nodes[v][2] = argmax[0]
+        nodes[v][3] = argmax[1]
+
+        queue.append((left, level+1))
+        queue.append((right, level+1))
+
+    def get_model(nodes):
+        def model(x):
+            v = 0
+            class_x = None
+            while True:
+                if len(nodes[v]) < 4:
+                    class_x = nodes[v][0]
+                    break
+                left, right, psi, tao = nodes[v]
+                if psi(x) < tao:
+                    v = left
+                else:
+                    v = right
+            result = np.zeros(K, dtype=np.float64)
+            result[class_x] = 1.0
+            return result
+        return model
+
+    return get_model(nodes)
+
+
+def example_2():
+    def f(train, valid):
+        return solution_tree(train[0], train[1], 25, 6, 5, 1e-3)
+    example_classification_k(f)
+
+
 if __name__ == '__main__':
     s = time.time()
+
+    example_2()
 
     e = time.time()
     print('time', e - s)
