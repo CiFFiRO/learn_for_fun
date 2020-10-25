@@ -164,6 +164,18 @@ def gen_data_t_1(size):
     return data, t
 
 
+def class_points(data, model):
+    T = data.shape[0]
+    plot_data = [[], [], [], []]
+    for i in range(T):
+        plot_data[model(data[i]).argmax()].append(data[i])
+    plot_arg = []
+    for i in range(4):
+        if len(plot_data[i]) > 0:
+            plot_arg.append((np.array([x[0] for x in plot_data[i]]), np.array([x[1] for x in plot_data[i]]), False))
+    return plot_arg
+
+
 def example_classification_k(get_model):
     data, t = gen_data_t_1(1000)
     train, valid, test = split_data(data, t)
@@ -171,15 +183,11 @@ def example_classification_k(get_model):
     model = get_model(train, valid)
     print(classification_error(model, train), classification_error(model, valid), classification_error(model, test))
 
-    T = test[0].shape[0]
-    plot_data = [[], [], [], []]
-    for i in range(T):
-        plot_data[model(test[0][i]).argmax()].append(test[0][i])
-    plot_arg = []
-    for i in range(4):
-        if len(plot_data[i]) > 0:
-            plot_arg.append((np.array([x[0] for x in plot_data[i]]), np.array([x[1] for x in plot_data[i]]), False))
+    plot_arg = class_points(test[0], model)
+    plot2d(plot_arg)
 
+    other = gen_data_t_3(1000)
+    plot_arg = class_points(other, model)
     plot2d(plot_arg)
 
 
@@ -189,7 +197,7 @@ def example_1():
     example_classification_k(f)
 
 
-def solution_tree(data, t, step_number, limit_level, limit_number, limit_entropy):
+def solution_tree(data, t, step_number, limit_level, limit_number, limit_entropy, rho=None):
     K = t.shape[1]
     N = t.shape[0]
     M = data.shape[1]
@@ -224,32 +232,55 @@ def solution_tree(data, t, step_number, limit_level, limit_number, limit_entropy
         v, level = queue.pop(0)
         H_v, N_v, cnt = H(v)
         if level > limit_level or N_v < limit_number or H_v < limit_entropy:
-            nodes[v] = [cnt.argmax()]
+            nodes[v] = [cnt / N_v]
             continue
         left, right = len(nodes), len(nodes) + 1
         nodes.append([])
         nodes.append([])
         nodes[v] = [left, right, None, None]
+
         max_value = float('-inf')
         argmax = [None, None]
-        for i in range(M):
-            psi = lambda x, idx=i: x[idx]
-            nodes[v][2] = psi
-            min_x, max_x = data[:, i].min(), data[:, i].max()
-            tao = min_x
-            step = (max_x-min_x)/step_number
-            while tao < max_x:
+
+        def check_theta(v, max_value):
+            left, right, _, _ = nodes[v]
+            H_left, N_left, _ = H(left)
+            H_right, N_right, _ = H(right)
+
+            I = H_v - (N_left / N_v) * H_left - (N_right / N_v) * H_right
+            if max_value < I and N_left * N_right > 1e-3:
+                argmax[0] = nodes[v][2]
+                argmax[1] = nodes[v][3]
+                return I
+            return max_value
+
+        if rho is None:
+            for i in range(M):
+                psi = lambda x, idx=i: x[idx]
+                nodes[v][2] = psi
+                min_x, max_x = data[:, i].min(), data[:, i].max()
+                tao = min_x
+                step = (max_x-min_x)/step_number
+                while tao < max_x:
+                    nodes[v][3] = tao
+                    tao += step
+                    max_value = check_theta(v, max_value)
+        else:
+            for _ in range(rho):
+                i = random.randint(0, M-1)
+                psi = lambda x, idx=i: x[idx]
+                min_x, max_x = data[:, i].min(), data[:, i].max()
+                step = (max_x - min_x) / step_number
+                tao = min_x + step * random.randint(1, step_number-1)
+                nodes[v][2] = psi
                 nodes[v][3] = tao
-                tao += step
+                max_value = check_theta(v, max_value)
 
-                H_left, N_left, _ = H(left)
-                H_right, N_right, _ = H(right)
-
-                I = H_v - (N_left/N_v)*H_left - (N_right/N_v)*H_right
-                if max_value < I:
-                    max_value = I
-                    argmax[0] = psi
-                    argmax[1] = nodes[v][3]
+        if argmax[0] is None:
+            nodes[v] = [cnt / N_v]
+            nodes.pop()
+            nodes.pop()
+            continue
 
         nodes[v][2] = argmax[0]
         nodes[v][3] = argmax[1]
@@ -258,20 +289,24 @@ def solution_tree(data, t, step_number, limit_level, limit_number, limit_entropy
         queue.append((right, level+1))
 
     def get_model(nodes):
-        def model(x):
+        def model(x, prob=False):
             v = 0
-            class_x = None
+            content = None
             while True:
                 if len(nodes[v]) < 4:
-                    class_x = nodes[v][0]
+                    content = nodes[v][0]
                     break
                 left, right, psi, tao = nodes[v]
                 if psi(x) < tao:
                     v = left
                 else:
                     v = right
-            result = np.zeros(K, dtype=np.float64)
-            result[class_x] = 1.0
+            result = None
+            if prob:
+                result = content
+            else:
+                result = np.zeros(K, dtype=np.float64)
+                result[content.argmax()] = 1.0
             return result
         return model
 
@@ -284,10 +319,47 @@ def example_2():
     example_classification_k(f)
 
 
+# Random Node Optimization
+def random_forest(data, t, rho, number_trees, step_number, limit_level, limit_number, limit_entropy):
+    trees = []
+    for _ in range(number_trees):
+        trees.append(solution_tree(data, t, step_number, limit_level, limit_number, limit_entropy, rho))
+    K = t.shape[1]
+
+    def get_model(trees):
+        def model(x, prob=False):
+            avr = trees[0](x)
+            for i in range(1, len(trees)):
+                avr += trees[i](x, True)
+            avr /= len(trees)
+            result = np.zeros(K, dtype=np.float64)
+            if prob:
+                result = avr
+            else:
+                result[avr.argmax()] = 1.0
+            return result
+        return model
+    return get_model(trees)
+
+
+def gen_data_t_3(size):
+    data = np.zeros((size, 2), dtype=np.float64)
+    for i in range(size):
+        data[i][0] = random.uniform(-20, 20)
+        data[i][1] = random.uniform(-20, 20)
+    return data
+
+
+def example_3():
+    def f(train, valid):
+        return random_forest(train[0], train[1], 5, 100, 25, 6, 5, 1e-3)
+    example_classification_k(f)
+
+
 if __name__ == '__main__':
     s = time.time()
 
-    example_2()
+    example_3()
 
     e = time.time()
     print('time', e - s)
