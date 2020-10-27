@@ -176,8 +176,16 @@ def class_points(data, model):
     return plot_arg
 
 
-def example_classification_k(get_model):
-    data, t = gen_data_t_1(1000)
+def gen_data_t_3(size, abs_value=20):
+    data = np.zeros((size, 2), dtype=np.float64)
+    for i in range(size):
+        data[i][0] = random.uniform(-abs_value, abs_value)
+        data[i][1] = random.uniform(-abs_value, abs_value)
+    return data
+
+
+def example_classification_k(get_model, get_gen_data=gen_data_t_1):
+    data, t = get_gen_data(1000)
     train, valid, test = split_data(data, t)
 
     model = get_model(train, valid)
@@ -328,7 +336,7 @@ def random_forest(data, t, rho, number_trees, step_number, limit_level, limit_nu
 
     def get_model(trees):
         def model(x, prob=False):
-            avr = trees[0](x)
+            avr = trees[0](x, True)
             for i in range(1, len(trees)):
                 avr += trees[i](x, True)
             avr /= len(trees)
@@ -342,24 +350,109 @@ def random_forest(data, t, rho, number_trees, step_number, limit_level, limit_nu
     return get_model(trees)
 
 
-def gen_data_t_3(size):
-    data = np.zeros((size, 2), dtype=np.float64)
-    for i in range(size):
-        data[i][0] = random.uniform(-20, 20)
-        data[i][1] = random.uniform(-20, 20)
-    return data
-
-
 def example_3():
     def f(train, valid):
         return random_forest(train[0], train[1], 5, 100, 25, 6, 5, 1e-3)
     example_classification_k(f)
 
 
+def adaboost(data, t, K, rho, step_number, limit_level, limit_number, limit_entropy):
+    N = data.shape[0]
+    N_0, N_1 = 0, 0
+    for i in range(N):
+        if t[i].argmax() == 0:
+            N_0 += 1
+        else:
+            N_1 += 1
+    alpha = np.zeros(K, dtype=np.float64)
+    w_prev = np.zeros(N, dtype=np.float64)
+    w = np.zeros(N, dtype=np.float64)
+    Y = []
+    for i in range(N):
+        w_prev[i] = 0.5 * (1/N_0 if t[i].argmax() == 0 else 1/N_1)
+    value_class = lambda idx: -1 if t[idx].argmax() == 0 else 1
+    for k in range(K):
+        tree = solution_tree(data, t, step_number, limit_level, limit_number, limit_entropy, rho)
+        y = lambda x, t=tree: -1 if t(x).argmax() == 0 else 1
+        eps = 0.0
+        for i in range(N):
+            eps += w_prev[i] * (1.0 if y(data[i])*value_class(i) < 0.0 else 0.0)
+        if eps > 0.5:
+            y = lambda x, t=tree: 1 if t(x).argmax() == 0 else -1
+            eps = 1.0 - eps
+        alpha[k] = 0.5 * math.log((1.0-eps)/eps)
+        for i in range(N):
+            w[i] = w_prev[i] * math.exp(alpha[k] * (1.0 if y(data[i])*value_class(i) < 0.0 else 0.0))
+        w_prev = w / w.sum()
+        Y.append(y)
+
+    def get_model(Y, alpha):
+        def model(x):
+            value = 0.0
+            result = np.zeros(2, dtype=np.float64)
+            for i in range(len(Y)):
+                value += alpha[i] * Y[i](x)
+            result[0 if np.sign(value) < 0.0 else 1] = 1.0
+            return result
+        return model
+    return get_model(Y, alpha)
+
+
+def gen_data_t_4(size):
+    data = np.zeros((size, 2), dtype=np.float64)
+    t = np.zeros((size, 2), dtype=np.float64)
+    center = (1, 1)
+    r = [3.0, 5.0]
+    for i in range(size):
+        x, y = None, None
+        if i % 2 == 0:
+            t[i][0] = 1.0
+            x = random.uniform(center[0]-r[1], center[0]+r[1])
+            if x < center[0]-r[0] or x > center[0]+r[0]:
+                y = random.uniform(center[1] - math.sqrt(r[1]**2-(center[0]-x)**2),
+                                   center[1] + math.sqrt(r[1]**2-(center[0]-x)**2))
+            else:
+                if random.randint(0, 1) == 0:
+                    y = random.uniform(center[1] - math.sqrt(r[0]**2-(center[0]-x)**2),
+                                       center[1] - math.sqrt(r[1] ** 2 - (center[0] - x) ** 2))
+                else:
+                    y = random.uniform(center[1] + math.sqrt(r[0] ** 2 - (center[0] - x) ** 2),
+                                       center[1] + math.sqrt(r[1] ** 2 - (center[0] - x) ** 2))
+        else:
+            t[i][1] = 1.0
+            type = random.randint(0, 2)
+            if type == 0:
+                x = random.uniform(center[0] - r[0], center[0] + r[0])
+                y = random.uniform(center[1] - math.sqrt(r[0]**2-(center[0]-x)**2),
+                                   center[1] + math.sqrt(r[0] ** 2 - (center[0] - x) ** 2))
+            elif type == 1:
+                x = random.uniform(center[0] - r[1], center[0] + r[1])
+                if random.randint(0, 1) == 0:
+                    y = random.uniform(center[1] + math.sqrt(r[1] ** 2 - (center[0] - x) ** 2), 20.0)
+                else:
+                    y = random.uniform(-20.0, center[1] - math.sqrt(r[1] ** 2 - (center[0] - x) ** 2))
+            else:
+                if random.randint(0, 1) == 0:
+                    x = random.uniform(-20, center[0] - r[1])
+                else:
+                    x = random.uniform(center[0] + r[1], 20)
+                y = random.uniform(-20, 20)
+
+        data[i][0] = x
+        data[i][1] = y
+    return data, t
+
+
+def example_4():
+    def f(train, valid):
+        return adaboost(train[0], train[1], 1000, 5, 25, 6, 5, 1e-3)
+    example_classification_k(f, gen_data_t_4)
+
+
 if __name__ == '__main__':
     s = time.time()
 
-    example_3()
+    example_4()
 
     e = time.time()
     print('time', e - s)

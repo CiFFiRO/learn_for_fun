@@ -407,8 +407,137 @@ r случайных вариантов theta_j
 недостатки:
 1. требует вектора "хороших" характеристик объектов так как не глубокий
 2. все деревья учитываются одинаково, совсем плохие в том числе 
+--------------------------------------------------------------------------------------
+ADABOOST
+
+решает задачу бинарной классификации 
+
+взвешенная обвыборка - (x_i, w_i, t_i) in (X, W, T) 
+
+для лин регрессии:
+E(w)= 1/2 sum n from 1 to N of ц_т*(t_n-w^T*phi(x_n))^2
+для лог регресии:
+E(W, b) = -sum i from 1 to N of w_i * sum k from 1 to K of t_i^(k) * ln(y_k(x_i, W, b))
+для дерева решений:
+I = H_w(S_i) - sum j (потомок i) of N`_i,j/N`_i * H_w(S_i,j)
+H_w(S_i) = -sum i from 1 to K of N`_i^(k)/N`_i * log(N`_i^(k)/N`_i)
+N`_i = sum x_l in S_i of w_l
+t_i = [N`_i^(1)/N`_i; ...; N`_i^(k)/N`_i]
+
+постановка задачи:
+C_-1, C_1, t_i in {-1, 1}, for i = 1...N
+слабые классификаторы 
+y_j(x) -> {-1, 1}, j=1,...,M
+необходимо построить классификатор:
+Y(x) = sign(sum j from 1 to M of alpha_j*y_j(x))
+
+метод бустинг:
+	1. получаем несколько классификаторов, которые верно классифицируют с вер-ю > 0.5
+	2. на каждом этапе выбираем лучший классификатор, который работал лучше на примерах
+	которые были "трудными" для предыдущих
+	3. "трудность" это вес примера из об выборки 
+	4. общий классификатор есть лин комб слабых 
+
+на каждом шаге веса должны быть > 0 и в сумме давать 1
+минимизируемая ф-ция для слабых классификаторов:
+J_j = sum i of w_i^(j)*(1 if h_k(x_i) * t_i < 0 else 0) = eps_j in [0;1]
+она является ошибкой классификатора 
+alpha_j = 0.5 ln((1-eps_j)/eps_j)
+таким образом если 
+eps_j = 0.5 классификатор не учитывается 
+eps_j > 0.5 классификатор инвертируется (его знак) и становиться сильнее и его ошибка пересчитывается
+чем меньше ошибка тем больше вес
+I(y_j(x_i) != t_i) = 1 if h_k(x_i) * y_i < 0 else 0
+
+w_i^(j+1) = w_i^(j) * exp(alpha_i * I(y_j(x_i) != t_i))
+w_i^(j+1) - если классификатор ошибся его вес "не меняется", иначе увеличивается
+
+алгоритм AdaBoost:
+	{h} - слабые классификаторы 
+	(x_1, y_1), ..., (x_m, y_m) Y={-1, 1}
+	1. w_1(i) - инициализация
+	eps = +inf
+	2. for k from 1 to K
+		2.1 обучаем h_k и вычислим ошибку eps=Pr[h_k(x_i) != y_i]=sum w_j(i)*(1 if h_k(x_i) * y_i < 0 else 0)
+		2.2 вес слабого классификатора alpha_k = 0.5 ln((1-eps)/eps) 
+		2.3 пересчитаем веса w_j+1(i) = w_j(i) * exp(alpha_i * I(h_k(x_i) != y_i))
+		2.4 нормализуем веса Z=sum i of w_j+1(i), w_j+1(i) /= Z
+	3. H(x) = sign(sum k from 1 to K of alpha_k * h_k(x))
+
+плюсы:
+	1. скорость обучения 
+	2. универсальность 
+	3. отсутствие параметров 
+	4. возможность распараллеливания 
+минусы: 
+	1. нужно определить нужное число итераций K 
+	2. ОЧЕНЬ плохо обучается если обвыборка содержит ошибки
+
+для борьбы с плохо сбалансированными обвыборками веса инициализируются 
+w_i^(1) = 0.5 * (1/N_-1 if t_i == -1 else 1/N_1)
+
+вывод и обоснование
+E_0 = sum i from 1 to N of exp(-0.5*t_i*Y`_m(x_i))
+Y`_m(x) = sum j from 1 to N of alpha_j*y_j(x)
+
+exp(-0.5*t_i*Y`_m(x_i)) < 1 если классификатор прав 
+причем если сильно уверен то -> 0
+и наоборот если сильно не прав то -> +inf 
 
 
+Y`_m(x) = Y`_m-1(x) + alpha_m*y_m(x)
+E_0 = sum i from 1 to N of exp(-0.5*t_i*Y`_m(x_i)) = sum i from 1 to N of exp(-0.5*t_i*Y`_m-1(x_i) 
+- 0.5*t_i*alpha_m*y_m(x_i)) = sum i from 1 to N of exp(-0.5*t_i*Y`_m-1(x_i)) * 
+exp(- 0.5*t_i*alpha_m*y_m(x_i)) = 
 
+w`_i^(m) = exp(-0.5*t_i*Y`_m-1(x_i))
 
+sum i from 1 to N of w`_i^(m) * exp(- 0.5*t_i*alpha_m*y_m(x_i)) =
+= Z`_m * sum i from 1 to N of exp(- 0.5*t_i*alpha_m*y_m(x_i)) -> min by alpha_m, y_m
+
+Z`_m = sum i from 1 to N of w`_i^(m)
+пусть w_i^(m) = w`_i^(m)/Z`_m => w_i^(m) > 0, sum i of w_i^(m) = 1
+
+E = sum i from 1 to N of w_i^(m) * exp(- 0.5*t_i*alpha_m*y_m(x_i)) -> min by alpha_m, y_m
+E = sum i from 1 to N of w_i^(m) * exp(- 0.5*t_i*alpha_m*y_m(x_i)) * I(y_m(x_i) != t_i) + 
+sum i from 1 to N of w_i^(m) * exp(- 0.5*t_i*alpha_m*y_m(x_i)) * I(y_m(x_i) == t_i) = 
+
+y_m(x_i) * t_i = -1 if y_m(x_i) != t_i
+y_m(x_i) * t_i = 1 if y_m(x_i) == t_i
+
+= sum i from 1 to N of w_i^(m) * exp(0.5*alpha_m) * I(y_m(x_i) != t_i) +
+sum i from 1 to N of w_i^(m) * exp(-0.5*alpha_m) * I(y_m(x_i) == t_i) =
+exp(0.5*alpha_m) * sum i from 1 to N of w_i^(m) * I(y_m(x_i) != t_i) +
+exp(-0.5*alpha_m) * sum i from 1 to N of w_i^(m) * I(y_m(x_i) == t_i) =
+= (exp(0.5*alpha_m) - exp(-0.5*alpha_m)) * sum i from 1 to N of w_i^(m) * I(y_m(x_i) != t_i) +
+exp(-0.5*alpha_m) * sum i from 1 to N of w_i^(m) * [I(y_m(x_i) == t_i) + I(y_m(x_i) != t_i)] =
+
+I(y_m(x_i) == t_i) + I(y_m(x_i) != t_i) = 1
+
+= (exp(0.5*alpha_m) - exp(-0.5*alpha_m)) * sum i from 1 to N of w_i^(m) * I(y_m(x_i) != t_i) + 
+exp(-0.5*alpha_m) -> min by y_m
+
+J = sum i from 1 to N of w_i^(m) * I(y_m(x_i) != t_i) = eps_m -> min by y_m
+
+E = (exp(0.5*alpha_m) - exp(-0.5*alpha_m)) * eps_m + exp(-0.5*alpha_m)
+d E/d alpha_m = 0.5 * (exp(0.5*alpha_m) + exp(-0.5*alpha_m)) * eps_m - 0.5 * exp(-0.5*alpha_m) = 0
+(exp(0.5*alpha_m) + exp(-0.5*alpha_m)) * eps_m - exp(-0.5*alpha_m) = 0
+exp(-0.5*alpha_m) * (1 - eps_m) = exp(0.5*alpha_m) * eps_m
+-0.5*alpha_m + ln(1 - eps_m) = 0.5*alpha_m + ln(eps_m)
+alpha_m = ln((1 - eps_m)/eps_m)
+
+w`_i^(m) = exp(-0.5*t_i*Y`_m-1(x_i))
+w`_i^(m+1) = exp(-0.5*t_i*Y`_m(x_i)) = exp(-0.5*t_i*Y`_m-1(x_i)-0.5*alpha_m*t_i*y_m(x_i)) =
+exp(-0.5*t_i*Y`_m-1(x_i))*exp(-0.5*alpha_m*t_i*y_m(x_i)) = w`_i^(m) * exp(-0.5*alpha_m*t_i*y_m(x_i)) =
+
+заметим что t_i*y_m(x_i) = 1 - 2 * I(y_m(x_i) != t_i)
+
+= w`_i^(m) * exp(-0.5*alpha_m + alpha_m * I(y_m(x_i) != t_i)) 
+
+w_i^(m+1) = w`_i^(m) * exp(-0.5*alpha_m + alpha_m * I(y_m(x_i) != t_i)) / 
+sum l from 1 to N w`_l^(m) * exp(-0.5*alpha_m + alpha_m * I(y_m(x_l) != t_l)) =
+поделим числитель и знаменатель на Z`_m
+w_i^(m) * exp(-0.5*alpha_m + alpha_m * I(y_m(x_i) != t_i)) / 
+sum l from 1 to N w_l^(m) * exp(-0.5*alpha_m + alpha_m * I(y_m(x_l) != t_l)) =
+w_i^(m) * exp(-0.5*alpha_m + alpha_m * I(y_m(x_i) != t_i)) / Z_m+1
 
