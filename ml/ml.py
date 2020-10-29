@@ -3,6 +3,7 @@ import random
 import matplotlib.pyplot
 import time
 import math
+import scipy.cluster
 
 
 def regression(data, t, phi, M, param):
@@ -449,10 +450,79 @@ def example_4():
     example_classification_k(f, gen_data_t_4)
 
 
+# scipy.cluster.vq.kmeans(data, k) - лучше
+def k_means(data, K, limit, eps_error, eps_centers):
+    N = data.shape[0]
+    D = data.shape[1]
+    centers = np.zeros((K, D), dtype=np.float64)
+    for i in range(K):
+        for j in range(D):
+            centers[i][j] = random.uniform(data[:, j].min(), data[:, j].max())
+
+    dif_error = float('+inf')
+    number = 0
+    dif_centers = float('+inf')
+    prev_error = 0.0
+    while dif_error > eps_error and number < limit and dif_centers > eps_centers:
+        new_centers = np.zeros((K, D), dtype=np.float64)
+        new_error = 0.0
+        c_sum = np.zeros(K, dtype=np.float64)
+        for i in range(N):
+            x = data[i]
+            index = None
+            value = float('+inf')
+            for j in range(K):
+                norm = np.linalg.norm(x-centers[j])
+                if value > norm:
+                    value = norm
+                    index = j
+            new_error += value
+            new_centers[index] += x
+            c_sum[index] += 1
+        for j in range(K):
+            if c_sum[j] > 0.0:
+                new_centers[j] /= c_sum[j]
+            else:
+                new_centers[j] = centers[j]
+
+        dif_centers = np.linalg.norm(new_centers-centers)
+        dif_error = abs(new_error-prev_error)
+        centers = new_centers
+        prev_error = new_error
+        number += 1
+
+    def get_model(centers):
+        def model(x):
+            index = None
+            value = float('+inf')
+            for j in range(centers.shape[0]):
+                norm = np.linalg.norm(x-centers[j])
+                if value > norm:
+                    value = norm
+                    index = j
+            return index
+        return model
+    return get_model(centers)
+
+
+def example_5():
+    def f(train, valid):
+        K = 4
+        model = k_means(train[0], K, 500, 1e-6, 1e-6)
+        def g(f):
+            def h(x):
+                t = np.zeros(K, dtype=np.float64)
+                t[f(x)] = 1.0
+                return t
+            return h
+        return g(model)
+    example_classification_k(f)
+
+
 if __name__ == '__main__':
     s = time.time()
 
-    example_4()
+    example_5()
 
     e = time.time()
     print('time', e - s)
